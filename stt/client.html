@@ -1,0 +1,63 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  html, body { margin:0; padding:0; background:transparent; }
+  #caption {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: #00ff9d; font-size: 28px; font-weight: 600;
+    text-shadow: 0 0 6px rgba(0,0,0,0.7);
+    direction: rtl; unicode-bidi: plaintext;
+    font-family: "Noto Nastaliq Urdu", "Noto Naskh Arabic UI", system-ui, sans-serif;
+    padding: 24px; text-align: center;
+  }
+</style>
+<div id="caption">…</div>
+<script>
+(async () => {
+  const WS_URL = (location.search.match(/ws=([^&]+)/) || [])[1] || "ws://localhost:8000";
+  const ws = new WebSocket(WS_URL);
+  ws.binaryType = "arraybuffer";
+  const caption = document.getElementById("caption");
+  ws.onmessage = (e) => {
+    try {
+      const { type, text } = JSON.parse(e.data);
+      if (type === "partial") caption.textContent = text || "…";
+    } catch { /* ignore */ }
+  };
+  ws.onclose = () => { caption.textContent = "🔌 کنکشن بند ہو گیا"; };
+
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } });
+  const ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: "interactive" });
+  const src = ctx.createMediaStreamSource(stream);
+
+  const TARGET_SR = 16000;
+  const processor = ctx.createScriptProcessor(4096, 1, 1);
+  src.connect(processor); processor.connect(ctx.destination);
+
+  function downsampleFloat32(buffer, inSr, outSr) {
+    if (outSr === inSr) return buffer;
+    const ratio = inSr / outSr;
+    const newLen = Math.floor(buffer.length / ratio);
+    const result = new Float32Array(newLen);
+    let idx = 0, pos = 0;
+    while (idx < newLen) { result[idx++] = buffer[Math.floor(pos)]; pos += ratio; }
+    return result;
+  }
+  function floatToInt16(float32) {
+    const out = new Int16Array(float32.length);
+    for (let i = 0; i < float32.length; i++) {
+      let s = Math.max(-1, Math.min(1, float32[i]));
+      out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+    return out;
+  }
+
+  processor.onaudioprocess = (e) => {
+    const inBuf = e.inputBuffer.getChannelData(0);
+    const ds = downsampleFloat32(inBuf, ctx.sampleRate, TARGET_SR);
+    const pcm16 = floatToInt16(ds);
+    if (ws.readyState === 1) ws.send(pcm16.buffer);
+  };
+})();
+</script>
